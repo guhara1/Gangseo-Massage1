@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.gangseo-massage.example.com/sitemap.xml
+Sitemap: https://gangseo-massage1.pages.dev/sitemap.xml
