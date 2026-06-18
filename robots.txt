@@ -2,3 +2,4 @@ User-agent: *
 Allow: /
 
 Sitemap: https://gangseo-massage1.pages.dev/sitemap.xml
+Sitemap: https://gangseo-massage1.pages.dev/rss.xml

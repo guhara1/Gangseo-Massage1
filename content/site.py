@@ -9,6 +9,9 @@ PHONE_DISPLAY = "0508-202-4719"
 DISTRICT = "강서구"
 REGION_LEAD = "강서구 전지역 방문 관리"
 
+# IndexNow 키 — Bing·Naver·Yandex에 즉시 색인 통보(빌드 시 {KEY}.txt 자동 생성)
+INDEXNOW_KEY = "9f05255c60be14e29e33cca3edfee517"
+
 # 상단 메뉴 — 하위 메뉴에는 키워드를 반복하지 않고 지역명·역명만 표시한다.
 NAV = [
     ("홈", "/", []),
