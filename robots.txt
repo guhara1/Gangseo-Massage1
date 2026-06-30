@@ -1,5 +1,5 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://gangseo-massage1.pages.dev/sitemap.xml
-Sitemap: https://gangseo-massage1.pages.dev/rss.xml
+Sitemap: https://gangseo-massage1.netlify.app/sitemap.xml
+Sitemap: https://gangseo-massage1.netlify.app/rss.xml
