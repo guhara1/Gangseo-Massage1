@@ -1,0 +1,16 @@
+# Netlify 배포 설정 — 강서 출장마사지 (바로GO)
+# 정적 HTML은 build.py 가 생성한다. 배포 시 빌드를 다시 돌려 캐노니컬·sitemap·rss 를 최신화한다.
+
+[build]
+  command = "python3 build.py"
+  publish = "."
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+
+# 후행 슬래시 정규화 — 디렉터리 URL 일관성 유지
+[[redirects]]
+  from = "/index.html"
+  to = "/"
+  status = 301
+  force = true

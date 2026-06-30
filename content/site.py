@@ -1,6 +1,6 @@
 # 사이트 공통 설정 — 강서 출장마사지 (바로GO)
-# 배포 도메인 확정 후 BASE_URL 을 실제 도메인으로 변경하세요.
-BASE_URL = "https://gangseo-massage1.pages.dev"
+# 배포 도메인 — Netlify 운영 도메인.
+BASE_URL = "https://gangseo-massage1.netlify.app"
 
 BRAND = "바로GO"
 BRAND_MARK = "바"
