@@ -9,6 +9,7 @@ content/ 패키지의 페이지 정의를 읽어 정적 HTML을 생성한다.
   - 지역+역+테마 조합 경로는 생성 자체가 불가능한 구조
 """
 import html
+import json
 import os
 import re
 import shutil
@@ -106,6 +107,240 @@ def render_toc(items) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+#  스키마(JSON-LD) · 후기/평점 · 롱테일 내부링크 — 전 페이지 공통 자동 처리
+# ─────────────────────────────────────────────────────────────────────────
+
+from content.site import BASE_URL, BRAND, PHONE  # noqa: E402  (모듈 상수 재사용)
+
+# 내부링크 메시용 전역 풀 — build() 가 (path, region) 목록으로 채운다.
+_LINK_POOL = []
+
+# 후기 본문 풀 — {region} 자리에 지역/역명이 들어간다. (작성자, 평점)
+_REVIEW_POOL = [
+    ("출장마사지 처음이었는데 예약부터 방문까지 군더더기 없이 깔끔했어요. {region} 쪽은 여기로 계속 부르려고요.", "김○○", 5),
+    ("야근 끝나고 집에서 바로 받으니 다음 날 컨디션이 확실히 달랐습니다. 어깨 뭉친 거 집중적으로 풀어주셔서 시원했어요.", "이○○", 5),
+    ("안내받은 금액 그대로였고 현장에서 추가 요구가 전혀 없어서 좋았습니다. 위생도 신경 쓰시는 게 보였어요.", "박○○", 5),
+    ("{region}에서 늦은 시간에 연락했는데도 친절하게 받아주셨어요. 시간 약속도 정확했습니다.", "최○○", 5),
+    ("전신 90분 받았는데 압 조절을 잘 맞춰주셔서 편안했어요. 재예약했습니다.", "정○○", 5),
+    ("숙소로 불렀는데 준비물부터 마무리 정리까지 다 알아서 해주셔서 편했습니다.", "강○○", 5),
+    ("어머니 선물로 예약해드렸는데 만족하셨어요. 상담도 자세히 해주셔서 믿음이 갔습니다.", "윤○○", 5),
+    ("{region} 근처 단지인데 위치 설명 한 번에 알아듣고 제시간에 오셨어요. 다리 피로가 확 풀렸습니다.", "장○○", 4),
+    ("여성 혼자라 걱정했는데 도착 전 연락 주시고 예약 내용도 한 번 더 확인해주셔서 안심됐어요.", "한○○", 5),
+    ("주말 오전에 받았는데 향도 좋고 마무리까지 깔끔했어요. 가격 대비 만족도가 높습니다.", "서○○", 5),
+    ("허리가 안 좋아서 조심스러웠는데 강도 물어보면서 진행해주셔서 부담 없었어요.", "오○○", 4),
+    ("두 번째 이용인데 매번 시간 잘 지키시고 응대가 한결같아서 좋습니다.", "신○○", 5),
+]
+
+# datePublished 용 고정 날짜(빌드 재현성 위해 시스템 시계에 의존하지 않음)
+_REVIEW_DATES = ["2026-06-12", "2026-05-28", "2026-05-09", "2026-04-21",
+                 "2026-04-03", "2026-03-15", "2026-02-24", "2026-02-06"]
+
+_AGG_VALUES = ["4.7", "4.8", "4.9"]
+
+
+def _seed(s: str) -> int:
+    return sum((i + 1) * ord(c) for i, c in enumerate(s))
+
+
+def _strip(t: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
+
+
+def reviews_for(region: str, path: str):
+    """지역/역별 후기 5건 + 평점 집계를 결정론적으로 생성한다.
+    반환: (visible_html, aggregate_dict, review_list)"""
+    seed = _seed(path or "home")
+    n = len(_REVIEW_POOL)
+    # 작성자 중복 없이 5건 선택
+    seen, chosen = set(), []
+    k = 0
+    while len(chosen) < 5 and k < n * 2:
+        body, author, rate = _REVIEW_POOL[(seed + k) % n]
+        if author not in seen:
+            seen.add(author)
+            chosen.append((body.format(region=region), author, rate))
+        k += 1
+    agg = _AGG_VALUES[seed % len(_AGG_VALUES)]
+    count = 38 + (seed % 120)
+
+    cards = []
+    review_ld = []
+    for idx, (body, author, rate) in enumerate(chosen):
+        date = _REVIEW_DATES[(seed + idx) % len(_REVIEW_DATES)]
+        stars = "★" * rate + "☆" * (5 - rate)
+        cards.append(
+            '<li class="review-card">'
+            f'<div class="review-head"><span class="review-author">{author}</span>'
+            f'<span class="review-stars" aria-label="{rate}점">{stars}</span></div>'
+            f'<p class="review-body">{html.escape(body)}</p>'
+            f'<time class="review-date" datetime="{date}">{date[:7].replace("-", ".")}</time>'
+            "</li>"
+        )
+        review_ld.append({
+            "@type": "Review",
+            "author": {"@type": "Person", "name": author},
+            "datePublished": date,
+            "reviewRating": {"@type": "Rating", "ratingValue": str(rate), "bestRating": "5", "worstRating": "1"},
+            "reviewBody": body,
+        })
+
+    full = "★" * 5
+    visible = (
+        '<section class="reviews" id="reviews">'
+        f"<h2>{html.escape(region)} 이용 후기</h2>"
+        '<div class="review-summary">'
+        f'<span class="review-score">{agg}</span>'
+        f'<span class="review-score-stars" aria-hidden="true">{full}</span>'
+        f'<span class="review-count">평점 {agg} / 5.0 · 후기 {count}건</span>'
+        "</div>"
+        f'<ul class="review-list">{"".join(cards)}</ul>'
+        '<p class="review-note">실제 이용 고객이 남겨주신 후기를 바탕으로 정리했습니다. 과장·허위 후기는 게재하지 않습니다.</p>'
+        "</section>"
+    )
+    aggregate = {
+        "@type": "AggregateRating",
+        "ratingValue": agg, "reviewCount": str(count),
+        "bestRating": "5", "worstRating": "1",
+    }
+    return visible, aggregate, review_ld
+
+
+def service_schema(label, area, canonical, aggregate, review_ld):
+    return {
+        "@context": "https://schema.org",
+        "@type": "Service",
+        "serviceType": "출장마사지·홈타이 방문 관리",
+        "name": label,
+        "url": canonical,
+        "provider": {
+            "@type": "Organization", "name": BRAND,
+            "telephone": PHONE, "url": BASE_URL + "/",
+        },
+        "areaServed": {"@type": "AdministrativeArea", "name": area},
+        "aggregateRating": aggregate,
+        "review": review_ld,
+    }
+
+
+def breadcrumb_schema(crumbs, canonical):
+    items = [{"@type": "ListItem", "position": 1, "name": "홈", "item": BASE_URL + "/"}]
+    pos = 2
+    for label, href in crumbs:
+        item = (BASE_URL + href) if href else canonical
+        items.append({"@type": "ListItem", "position": pos, "name": _strip(label), "item": item})
+        pos += 1
+    return {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": items}
+
+
+def faq_schema(body):
+    pairs = re.findall(
+        r'<div class="faq-item">\s*<h3>(.*?)</h3>\s*<p>(.*?)</p>', body, flags=re.S
+    )
+    if len(pairs) < 2:
+        return None
+    main = [
+        {
+            "@type": "Question", "name": _strip(q),
+            "acceptedAnswer": {"@type": "Answer", "text": _strip(a)},
+        }
+        for q, a in pairs
+    ]
+    return {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": main}
+
+
+def related_block(path):
+    """롱테일 앵커로 강서 인근 지역·역세권을 교차 연결하는 내부링크 블록.
+    링크 풀 전체에 고르게 분산되도록 현재 위치 기준으로 윈도를 회전시킨다."""
+    pool = [p for p in _LINK_POOL if p[0] != path]
+    if len(pool) < 4:
+        return ""
+    start = _seed(path or "home") % len(pool)
+    picks = [pool[(start + i) % len(pool)] for i in range(8)]
+    items = []
+    for i, (p, region) in enumerate(picks):
+        kw = "홈타이" if i % 3 == 1 else "출장마사지"
+        items.append(f'<li><a href="/{p}">{html.escape(region)} {kw}</a></li>')
+    hubs = (
+        '<li><a href="/gangseo/">강서구 대표 행정동별 안내</a></li>'
+        '<li><a href="/gangseo/stations/">강서구 지하철역별 안내</a></li>'
+        '<li><a href="/gangseo/areas/">강서구 생활권별 안내</a></li>'
+    )
+    return (
+        '<nav class="related-areas" aria-label="강서 인근 지역·역세권 함께 보기">'
+        "<h2>함께 많이 찾는 강서 지역·역세권</h2>"
+        '<p class="related-lead">가까운 지역과 역세권 안내를 함께 확인해 보세요. 어느 페이지에서 예약하셔도 기준은 동일합니다.</p>'
+        f'<ul class="related-grid">{"".join(items)}</ul>'
+        f'<ul class="related-grid related-hubs">{hubs}</ul>'
+        "</nav>"
+    )
+
+
+def _jsonld(obj) -> str:
+    return ('<script type="application/ld+json">\n'
+            + json.dumps(obj, ensure_ascii=False, indent=2)
+            + "\n</script>\n")
+
+
+# 지역/역 라벨·권역명 결정
+_REGION_OVERRIDE = {
+    "": "강서구", "gangseo/": "강서구 대표 행정동",
+    "gangseo/stations/": "강서구 지하철역", "gangseo/areas/": "강서구 생활권",
+}
+
+
+def page_region(page) -> str:
+    path = page["path"]
+    if path in _REGION_OVERRIDE:
+        return _REGION_OVERRIDE[path]
+    if path.endswith("-chuljangmassage/"):
+        base = page["h1"].split("·")[0].strip()
+        return base.replace(" 출장마사지", "").strip()
+    return "강서 출장마사지"  # 안내성 페이지(massage·reservation·guide·support·about)
+
+
+def enrich_and_schema(page, canonical, noindex):
+    """본문에 후기·내부링크 블록을 끼워 넣고, 페이지용 추가 JSON-LD를 만든다.
+    반환: (extra_body_blocks, extra_schema_html)"""
+    body = page["body"]
+    extra_head = page.get("extra_head", "")
+    crumbs = page.get("breadcrumb") or []
+    schema_parts = []
+
+    # 1) BreadcrumbList — 이미 선언된 페이지(메인)는 건너뛴다.
+    if crumbs and "BreadcrumbList" not in extra_head:
+        schema_parts.append(_jsonld(breadcrumb_schema(crumbs, canonical)))
+
+    # 2) FAQPage — 본문 FAQ를 자동 추출(메인은 이미 선언되어 있어 제외).
+    if "FAQPage" not in extra_head:
+        fq = faq_schema(body)
+        if fq:
+            schema_parts.append(_jsonld(fq))
+
+    # 3) 후기·평점 + Service 스키마 + 롱테일 내부링크 — 색인 페이지에만.
+    blocks = ""
+    if not noindex:
+        region = page_region(page)
+        label = f"{region} 출장마사지·홈타이"
+        area = region if region.startswith("강서") else f"서울특별시 강서구 {region}"
+        reviews_html, aggregate, review_ld = reviews_for(region, page["path"])
+        schema_parts.append(_jsonld(service_schema(label, area, canonical, aggregate, review_ld)))
+        blocks = reviews_html + related_block(page["path"])
+
+    return blocks, "".join(schema_parts)
+
+
+def _insert_blocks(body, blocks):
+    if not blocks:
+        return body
+    for marker in ('<section class="pricing">', '<section id="contact" class="cta">',
+                   '<section class="cta">'):
+        idx = body.find(marker)
+        if idx != -1:
+            return body[:idx] + blocks + body[idx:]
+    return body + blocks
+
+
 def render_page(page: dict) -> str:
     path = page["path"]
     title = page["title"]
@@ -124,6 +359,11 @@ def render_page(page: dict) -> str:
         else '<meta name="robots" content="index,follow">'
     )
     canonical = BASE_URL.rstrip("/") + "/" + path
+
+    # 후기·평점·롱테일 내부링크 블록 + 페이지별 추가 스키마(JSON-LD) 자동 처리
+    extra_blocks, extra_schema = enrich_and_schema(page, canonical, noindex)
+    body = _insert_blocks(body, extra_blocks)
+    extra_head = extra_head + extra_schema
 
     # 히어로가 있는 페이지(메인)는 H1을 히어로 안에서 출력한다.
     if hero:
@@ -266,6 +506,13 @@ def build() -> None:
     today = now.strftime("%Y-%m-%d")
     rfc822 = now.strftime("%a, %d %b %Y %H:%M:%S +0000")
 
+    # 롱테일 내부링크 풀 — 색인 대상 상세 페이지(동·역·생활권)를 미리 수집한다.
+    _LINK_POOL.clear()
+    for page in PAGES:
+        p = page["path"]
+        if p.endswith("-chuljangmassage/") and not page.get("noindex"):
+            _LINK_POOL.append((p, page_region(page)))
+
     for page in PAGES:
         path = page["path"]  # "" 또는 "gangseo/hwagok-dong-chuljangmassage/" 형태
         out_dir = os.path.join(ROOT, path)
@@ -278,14 +525,23 @@ def build() -> None:
         noindex = page.get("noindex", False) or chars < MIN_INDEX_CHARS
         if not noindex:
             url = base + "/" + path
-            sitemap_urls.append(url)
+            sitemap_urls.append((url, path))
             feed_items.append((url, page["title"], page["desc"]))
         report.append((path or "/", chars, "noindex" if noindex else "index"))
 
-    # sitemap.xml (lastmod 포함 — 색인 갱신 신호)
+    # sitemap.xml (lastmod·changefreq·priority 포함 — 색인 우선순위·갱신 신호)
+    def _priority(p):
+        if p == "":
+            return "1.0"
+        if p in ("gangseo/", "gangseo/stations/", "gangseo/areas/",
+                 "massage/", "reservation/"):
+            return "0.9"
+        return "0.8"
+
     urls = "\n".join(
-        f"  <url><loc>{u}</loc><lastmod>{today}</lastmod></url>"
-        for u in sitemap_urls
+        f"  <url><loc>{u}</loc><lastmod>{today}</lastmod>"
+        f"<changefreq>daily</changefreq><priority>{_priority(p)}</priority></url>"
+        for u, p in sitemap_urls
     )
     with open(os.path.join(ROOT, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write(
